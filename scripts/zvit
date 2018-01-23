@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys, zvit.bin
+
+if __name__ == "__main__":
+	sys.exit(zvit.bin.main(sys.argv))
