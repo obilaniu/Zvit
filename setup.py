@@ -4,7 +4,7 @@
 #
 # Imports
 #
-import os, subprocess, time
+import os, sys, subprocess, time
 from   setuptools import setup, find_packages, Extension
 
 
@@ -81,6 +81,13 @@ def getDownloadURL(v):
 
 
 if __name__ == "__main__":
+	#
+	# Defend against Python2
+	#
+	if sys.version_info[0] < 3:
+		sys.stdout.write("This package is Python 3+ only!\n")
+		sys.exit(1)
+	
 	#
 	# Handle version information
 	#
