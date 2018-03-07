@@ -160,7 +160,16 @@ class ZvitWriter(object):
 	
 	def __getstate__        (self):
 		self.flush()
-		raise pkl.PickleError("Cannot pickle a ZvitWriter!")
+		return (self._logDir,
+		        self._globalStep,
+		        self._flushSecs,
+		        self._flushBufSz,
+		        self._tagMatcher,
+		        self._collectionMatcher,)
+	
+	def __setstate__        (self, args):
+		self.__init__(*args)
+	
 	
 	#
 	# Fundamental, readonly properties.
