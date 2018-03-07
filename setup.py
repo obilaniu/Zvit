@@ -15,7 +15,7 @@ from   setuptools import setup, find_packages, Extension
 def getVersionInfo():
 	zvitVerMajor  = 0
 	zvitVerMinor  = 0
-	zvitVerPatch  = 0
+	zvitVerPatch  = 1
 	zvitVerIsRel  = True
 	zvitVerPreRel = "dev0"
 	
