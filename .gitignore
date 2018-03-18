@@ -1,6 +1,6 @@
 # Ignored whole directories
 build
-bdist
+dist
 install
 3rdparty
 
@@ -23,6 +23,7 @@ install
 **.egg-info
 **.egg
 **.whl
+**/__pycache__/
 
 ## Binary Data Files
 **.hdf5
@@ -74,4 +75,4 @@ install
 
 
 # Project-specific ignores
-zvit/version.py
+src/zvit/version.py

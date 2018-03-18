@@ -1,0 +1,5 @@
+Zvit is a logging package that makes it easy to write TensorFlow Events
+files compatible with TensorBoard.
+
+The name "Zvit" is a phonetic transliteration of the Ukrainian word "Звіт",
+meaning "report" or "account", typically of a written form.
