@@ -1,9 +1,11 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# PYTHON_ARGCOMPLETE_OK
 import nauka, sys
 
 
-class root(nauka.utils.Subcommand):
-	class bench(nauka.utils.Subcommand):
+class root(nauka.ap.Subcommand):
+	class bench(nauka.ap.Subcommand):
 		"""Benchmark Zvit internals."""
 		parserArgs = {"help": __doc__}
 		
@@ -19,7 +21,7 @@ class root(nauka.utils.Subcommand):
 			print("CRC32C: {:.3f} MiB/s".format(s/t/(1024**2)))
 			return 0
 	
-	class demo(nauka.utils.Subcommand):
+	class demo(nauka.ap.Subcommand):
 		"""\
 		Demo application for Zvit.
 		
@@ -30,8 +32,8 @@ class root(nauka.utils.Subcommand):
 		parserArgs = {"help": __doc__}
 		
 		@classmethod
-		def addArgs(kls, argp):
-			argp.add_argument("-d", "--logDir",         default=".",                type=str,
+		def addArgs(cls, argp):
+			argp.add_argument("-d", "--logDir",         default=".",          type=str,
 			    help="Path to log directory.")
 			argp.add_argument("-s", "--seed",           default=0x6a09e667f3bcc908, type=int,
 			    help="Seed for PRNGs. Default is 64-bit fractional expansion of sqrt(2).")
@@ -43,9 +45,12 @@ class root(nauka.utils.Subcommand):
 
 
 def main(argv=sys.argv):
-	a = root.addAllArgs().parse_args(argv[1:])
+	argp = root.addAllArgs()
+	try:    import argcomplete; argcomplete.autocomplete(argp)
+	except: pass
+	a    = argp.parse_args(argv[1:])
 	a.__argv__ = argv
-	return a.__kls__.run(a)
+	return a.__cls__.run(a)
 
 
 if __name__ == "__main__":
