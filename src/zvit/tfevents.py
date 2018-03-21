@@ -159,7 +159,7 @@ class TfSummary           (PebbleMessage):
 		return TfEvent(step, wallTime, summary=self)
 	
 	@classmethod
-	def fromDict(kls, value={}):
+	def fromDict(cls, value={}):
 		return TfSummary(value=[v for k,v in sorted(value.items())])
 
 class TfLogMessage        (PebbleMessage):
@@ -268,12 +268,12 @@ class TfTensor            (PebbleMessage):
 	]
 	
 	@classmethod
-	def fromText(kls, t, dimNames=None):
+	def fromText(cls, t, dimNames=None):
 		dtype, shape, stringVal = tensorFromText (t, dimNames)
 		return TfTensor(dtype=dtype, tensorShape=shape, stringVal=stringVal)
 	
 	@classmethod
-	def fromNumpy(kls, t, dimNames=None):
+	def fromNumpy(cls, t, dimNames=None):
 		dtype, shape, tensorVal = tensorFromNumpy(t, dimNames)
 		return TfTensor(dtype=dtype, tensorShape=shape, tensorVal=tensorVal)
 	
@@ -406,7 +406,7 @@ class HistogramAccumulator(object):
 		return {"min", "max", "num", "sum", "sumSquares", "bucketLimits", "buckets"}
 	
 	@classmethod
-	def getDefaultBucketLimits(kls):
+	def getDefaultBucketLimits(cls):
 		"""
 		Compute the default histogram buckets used by TF.
 		"""

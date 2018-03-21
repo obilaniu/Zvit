@@ -624,7 +624,7 @@ class ZvitWriter(object):
 		return re.sub("/+", "/", "/".join(tagPath))
 	
 	@classmethod
-	def topZvit             (kls):
+	def topZvit             (cls):
 		"""
 		Return the default ZvitWriter for the current thread.
 		
