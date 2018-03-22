@@ -87,7 +87,7 @@ setup(
     ],
     python_requires      = '>=3.4',
     install_requires     = [
-        "nauka>=0.0.7",
+        "nauka>=0.0.8",
         "numpy>=1.10",
         "Pillow>=4.0.0",
     ],
