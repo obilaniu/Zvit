@@ -159,16 +159,19 @@ class ZvitWriter(object):
 		assert popped == self
 	
 	def __getstate__        (self):
+		"""
+		Pickles a ZvitWriter.
+		
+		A ZvitWriter may not be pickled. It is inherently a transient, local
+		object. Moreover, pickling directly or indirectly the path to which it
+		logs ties a snapshot to a particular path. This is highly undesirable;
+		Snapshots should be path-independent.
+		
+		The ZvitWriter should be considered a write-only interface to the true
+		state, which is the .zvit file in the log directory.
+		"""
 		self.flush()
-		return (self._logDir,
-		        self._globalStep,
-		        self._flushSecs,
-		        self._flushBufSz,
-		        self._tagMatcher,
-		        self._collectionMatcher,)
-	
-	def __setstate__        (self, args):
-		self.__init__(*args)
+		raise pkl.PickleError("Cannot pickle a ZvitWriter!")
 	
 	
 	#
