@@ -13,6 +13,7 @@ import                        sys
 import                        threading
 import                        time
 import                        uuid
+import                        weakref
 
 from   io              import BytesIO
 
@@ -377,6 +378,32 @@ class ZvitWriter(object):
 		
 		with self._lock:
 			if self.asynchronous and not self._flushThread:
+				"""
+				ZvitWriter's __del__() method invokes close(), which safely
+				shuts down the flusher thread, triggering a final flush to
+				disk.
+				
+				However, __del__() is only invoked when the ZvitWriter's
+				reference count has dropped to 0 and is about to be destroyed!
+				
+				What this means is that if the flusher thread is spawned with
+				a strong reference to the ZvitWriter, that ZvitWriter's
+				__del__() method will never be invoked, because the thread
+				itself keeps the ZvitWriter alive and prevents its destructor
+				from being invoked!
+				
+				We solve this problem and the circularity of these references
+				by giving the flusher thread only a weak reference to the
+				ZvitWriter for which it is responsible. It is not possible for
+				the ZvitWriter to disappear from under the thread, because
+				before the ZvitWriter's __del__() exits, the flusher thread
+				has been made to exit.
+				"""
+				
+				
+				proxy = weakref.proxy(self)
+				
+				
 				def flusher():
 					"""
 					Flusher thread implementation. Simply waits on the
@@ -391,12 +418,12 @@ class ZvitWriter(object):
 					"""
 					
 					thrd = threading.currentThread()
-					with self._lock:
+					with proxy._lock:
 						while not thrd.isExiting:
-							self._lock.wait(self._flushSecs)
-							self.flush()
-						self._flushThread = None
-						self._lock.notifyAll()
+							proxy._lock.wait(proxy._flushSecs)
+							proxy.flush()
+						proxy._flushThread = None
+						proxy._lock.notifyAll()
 				
 				
 				thrdName = "zvitwriter-{:x}-flushThread".format(id(self))
