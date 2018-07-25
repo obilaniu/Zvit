@@ -1036,10 +1036,7 @@ class NullZvitWriter(ZvitWriter):
 	"""
 	
 	def __init__            (self, *args, **kwargs):
-		if "logDir" in kwargs:  kwargs["logDir"] = ""
-		elif len(args) > 0:     args             = ("",)+args[1:]
-		else:                   args             = [""]
-		super().__init__(*args, **kwargs)
+		super().__init__("", 0)
 	def _initAsserts        (self):                return self
 	def _spawnFlushThread   (self):                return self
 	def write               (self, b, flush=None): return len(b)
