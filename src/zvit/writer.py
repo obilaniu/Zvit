@@ -85,7 +85,7 @@ class ZvitWriter(object):
 		self._flushSecs         = flushSecs
 		self._flushBufSz        = flushBufSz
 		self._flushThread       = None
-		self._lock              = threading.Condition()
+		self._lock              = threading.Condition(threading.Lock())
 		self._tls               = threading.local()
 		
 		#
@@ -292,7 +292,7 @@ class ZvitWriter(object):
 	
 	
 	#
-	# Internals. Do not touch.
+	# Internals. Do not touch. Generally called with the lock held.
 	#
 	def _initAsserts        (self):
 		"""
@@ -376,60 +376,36 @@ class ZvitWriter(object):
 		have asked for asynchronous writing.
 		"""
 		
-		with self._lock:
-			if self.asynchronous and not self._flushThread:
-				"""
-				ZvitWriter's __del__() method invokes close(), which safely
-				shuts down the flusher thread, triggering a final flush to
-				disk.
-				
-				However, __del__() is only invoked when the ZvitWriter's
-				reference count has dropped to 0 and is about to be destroyed!
-				
-				What this means is that if the flusher thread is spawned with
-				a strong reference to the ZvitWriter, that ZvitWriter's
-				__del__() method will never be invoked, because the thread
-				itself keeps the ZvitWriter alive and prevents its destructor
-				from being invoked!
-				
-				We solve this problem and the circularity of these references
-				by giving the flusher thread only a weak reference to the
-				ZvitWriter for which it is responsible. It is not possible for
-				the ZvitWriter to disappear from under the thread, because
-				before the ZvitWriter's __del__() exits, the flusher thread
-				has been made to exit.
-				"""
-				
-				
-				proxy = weakref.proxy(self)
-				
-				
-				def flusher():
-					"""
-					Flusher thread implementation. Simply waits on the
-					condition and periodically flush to disk the buffer
-					contents.
-					
-					*MUST NOT* call close(), because it *WILL* lead to deadlock.
-					
-					On exit request, will indicate its own exit by destroying
-					the reference to itself in the ZvitWriter, and will then
-					notify all waiters before terminating.
-					"""
-					
-					thrd = threading.currentThread()
-					with proxy._lock:
-						while not thrd.isExiting:
-							proxy._lock.wait(proxy._flushSecs)
-							proxy.flush()
-						proxy._flushThread = None
-						proxy._lock.notifyAll()
-				
-				
-				thrdName = "zvitwriter-{:x}-flushThread".format(id(self))
-				self._flushThread = threading.Thread(target=flusher, name=thrdName)
-				self._flushThread.isExiting = False
-				self._flushThread.start()
+		if self.asynchronous and not self._flushThread:
+			"""
+			ZvitWriter's __del__() method invokes close(), which safely
+			shuts down the flusher thread, triggering a final flush to
+			disk.
+			
+			However, __del__() is only invoked when the ZvitWriter's
+			reference count has dropped to 0 and is about to be destroyed!
+			
+			What this means is that if the flusher thread is spawned with
+			a strong reference to the ZvitWriter, that ZvitWriter's
+			__del__() method will never be invoked, because the thread
+			itself keeps the ZvitWriter alive and prevents its destructor
+			from being invoked!
+			
+			We solve this problem and the circularity of these references
+			by giving the flusher thread only a weak reference to the
+			ZvitWriter for which it is responsible. It is not possible for
+			the ZvitWriter to disappear from under the thread, because
+			before the ZvitWriter's __del__() exits, the flusher thread
+			has been made to exit.
+			"""
+			
+			thrdName = "zvitwriter-{:x}-flushThread".format(id(self))
+			self._flushThread = threading.Thread(target = _flusher,
+			                                     name   = thrdName,
+			                                     args   = (weakref.proxy(self),),
+			                                     daemon = False)
+			self._flushThread.isExiting = False
+			self._flushThread.start()
 		
 		return self
 	
@@ -439,10 +415,9 @@ class ZvitWriter(object):
 		from them and enqueue it for writeout, but do not flush the bytebuffer.
 		"""
 		
-		with self._lock:
-			if self._VB:
-				self.writeSummary(TfSummary.fromDict(self._VB))
-				self._VB = {}
+		if self._VB:
+			self._writeSummary(TfSummary.fromDict(self._VB))
+			self._VB = {}
 		return self
 	
 	def _stageValue         (self, v):
@@ -452,17 +427,120 @@ class ZvitWriter(object):
 		
 		assert isinstance(v, TfValue)
 		
-		with self._lock:
-			if hasattr(v, "metadata") and v.tag in self._MB:
-				# TensorBoard only keeps the first metadata it sees to save space
-				del v.metadata
-			if v.tag in self._VB:
-				# There is a value with the same tag already staged in the
-				# summary value buffer. Commit it to the bytebuffer.
-				self._commitValues()
-			self._VB[v.tag] = v
-			self._MB.add(v.tag)
+		if hasattr(v, "metadata") and v.tag in self._MB:
+			# TensorBoard only keeps the first metadata it sees to save space
+			del v.metadata
+		if v.tag in self._VB:
+			# There is a value with the same tag already staged in the
+			# summary value buffer. Commit it to the bytebuffer.
+			self._commitValues()
+		self._VB[v.tag] = v
+		self._MB.add(v.tag)
 		return self
+	
+	def _flush              (self):
+		"""
+		Write out and flush the bytebuffer to disk synchronously.
+		"""
+		
+		self._commitValues()
+		if self._BB:
+			with open(self.logFilePath, "ab") as f:
+				f.write(self._BB)
+				f.flush()
+			self._BB = bytearray()
+		return self
+	
+	def _write              (self, b, flush=None):
+		"""
+		Write raw data to the bytebuffer.
+		
+		**All** additions to the bytebuffer **must** happen through this
+		method. This method and the bytebuffer are the portal between the
+		log-generating and log-writing parts of the writer object.
+		
+		The only time the bytebuffer's size can change other than through this
+		method is when it is flushed and emptied periodically from within the
+		flush() method, which may be called either synchronously by any thread,
+		or asynchronously by the flusher thread.
+		
+		If the keyword argument flush=True,  flush synchronously the BB.
+		If the keyword argument flush=None (the default), flush the BB
+		synchronously or asynchronously depending on the flushSecs/flushBufSz
+		properties.
+		If the keyword argument flush=False, do not flush the BB at all.
+		"""
+		
+		b = bytearray(b)
+		l = len(b)
+		if l:
+			#
+			# For reasons also elaborated upon at length in __init__(), it
+			# is desirable to be as lazy as possible in creating the logfile
+			# itself, and thus polluting the filesystem. In the event of this
+			# ZvitWriter being created and destroyed without having recorded
+			# any data, or the program crashing before being able to do so,
+			# we would like to avoid creating the logfile entirely.
+			#
+			# But even a logfile devoid of any event must have a specific
+			# file header (FH), and any data in the bytebuffer (BB) will be
+			# written out on flush(), which is called from __del__(). This
+			# is problematic for us because it would mean that the logfile
+			# would get created on object destruction even if it contains
+			# no useful events whatsoever.
+			#
+			# We work around this by *withholding* the FH from the BB until
+			# last possible moment: When a non-zero number of bytes is
+			# first written into the BB. At that moment, we prepend the FH
+			# into the BB, and the FH, along with a first packet of useful
+			# data, become eligible for synchronous or asynchronous flushing
+			# to the logfile.
+			#
+			if self._FH:
+				self._BB, self._FH = self._FH, None
+			
+			# True append into bytebuffer
+			self._BB += b
+			
+			#
+			# Flushing policies:
+			# - False:           Disabled
+			# - None (default):  Synchronously if overflowing;
+			#                    Asynchronously otherwise.
+			# - True:            Synchronously.
+			#
+			if   flush is False: pass
+			elif flush is None:
+				if self.overflowing: self._flush()
+				else:                self._spawnFlushThread()
+			elif flush is True:  self._flush()
+		
+		return l
+	
+	def _writeEvent         (self, e):
+		"""
+		Append a TfEvent to the bytebuffer.
+		"""
+		
+		self._write(e.asRecordByteArray())
+		return self
+	
+	def _writeSummary       (self, s):
+		"""
+		Write a TfSummary object to the bytebuffer.
+		"""
+		
+		return self._writeEvent(s.asEvent(self.globalStep))
+	
+	def _logScalarLocked    (self, tag, scalar, **kwargs):
+		"""Log a single scalar value. Called with the lock held."""
+		
+		metadata, reject, tag = self._commonTagLogic("scalars", tag=tag, **kwargs)
+		if reject: return self
+		
+		val = TfValue(tag=tag, metadata=metadata, simpleValue=scalar)
+		return self._stageValue(val)
+	
 	
 	#
 	# Public API
@@ -495,18 +573,8 @@ class ZvitWriter(object):
 		return self
 	
 	def flush               (self):
-		"""
-		Write out and flush the bytebuffer to disk synchronously.
-		"""
-		
 		with self._lock:
-			self._commitValues()
-			if self._BB:
-				with open(self.logFilePath, "ab") as f:
-					f.write(self._BB)
-					f.flush()
-				self._BB = bytearray()
-		return self
+			return self._flush()
 	
 	def close               (self):
 		"""
@@ -517,11 +585,12 @@ class ZvitWriter(object):
 		"""
 		
 		with self._lock:
-			while self._flushThread:
-				self._flushThread.isExiting = True
+			thrd = self._flushThread
+			if thrd is not None:
+				thrd.isExiting = True
 				self._lock.notifyAll()
-				self._lock.wait()
-			return self.flush()
+		if thrd is not None: thrd.join()
+		return self
 	
 	def step                (self, step=None):
 		"""
@@ -544,7 +613,7 @@ class ZvitWriter(object):
 				flush it out afterwards.
 				"""
 				self._commitValues()
-				self.flush()
+				self._flush()
 				self._globalStep = int(step)
 		return self
 	
@@ -568,52 +637,8 @@ class ZvitWriter(object):
 		If the keyword argument flush=False, do not flush the BB at all.
 		"""
 		
-		b = bytearray(b)
-		l = len(b)
-		if l:
-			with self._lock:
-				#
-				# For reasons also elaborated upon at length in __init__(), it
-				# is desirable to be as lazy as possible in creating the logfile
-				# itself, and thus polluting the filesystem. In the event of this
-				# ZvitWriter being created and destroyed without having recorded
-				# any data, or the program crashing before being able to do so,
-				# we would like to avoid creating the logfile entirely.
-				#
-				# But even a logfile devoid of any event must have a specific
-				# file header (FH), and any data in the bytebuffer (BB) will be
-				# written out on flush(), which is called from __del__(). This
-				# is problematic for us because it would mean that the logfile
-				# would get created on object destruction even if it contains
-				# no useful events whatsoever.
-				#
-				# We work around this by *withholding* the FH from the BB until
-				# last possible moment: When a non-zero number of bytes is
-				# first written into the BB. At that moment, we prepend the FH
-				# into the BB, and the FH, along with a first packet of useful
-				# data, become eligible for synchronous or asynchronous flushing
-				# to the logfile.
-				#
-				if self._FH:
-					self._BB, self._FH = self._FH, None
-				
-				# True append into bytebuffer
-				self._BB += b
-				
-				#
-				# Flushing policies:
-				# - False:           Disabled
-				# - None (default):  Synchronously if overflowing;
-				#                    Asynchronously otherwise.
-				# - True:            Synchronously.
-				#
-				if   flush is False: pass
-				elif flush is None:
-					if self.overflowing: self.flush()
-					else:                self._spawnFlushThread()
-				elif flush is True:  self.flush()
-		
-		return l
+		with self._lock:
+			return self._write(b, flush)
 	
 	def writeEvent          (self, e):
 		"""
@@ -621,8 +646,7 @@ class ZvitWriter(object):
 		"""
 		
 		with self._lock:
-			self.write(e.asRecordByteArray())
-		return self
+			return self._writeEvent(e)
 	
 	def writeSummary        (self, s):
 		"""
@@ -630,8 +654,7 @@ class ZvitWriter(object):
 		"""
 		
 		with self._lock:
-			self.writeEvent(s.asEvent(self.globalStep))
-		return self
+			return self._writeSummary(s)
 	
 	def getFullyQualifiedTag(self, tag, tagPrefix=None):
 		"""
@@ -672,18 +695,16 @@ class ZvitWriter(object):
 	def logScalar           (self, tag, scalar, **kwargs):
 		"""Log a single scalar value."""
 		
-		metadata, reject, tag = self._commonTagLogic("scalars", tag=tag, **kwargs)
-		if reject: return self
-		
-		val = TfValue(tag=tag, metadata=metadata, simpleValue=scalar)
-		return self._stageValue(val)
+		with self._lock:
+			return self._logScalarLocked(tag, scalar, **kwargs)
+		return self
 	
 	def logScalars          (self, scalarsDict, **kwargs):
 		"""Log multiple scalar values, provided as a (tag, value) iterable."""
 		
 		with self._lock:
 			for tag, scalar in scalarsDict.items():
-				self.logScalar(tag, scalar, **kwargs)
+				self._logScalarLocked(tag, scalar, **kwargs)
 		return self
 	
 	def logImage            (self, tag, images, csc=None, h=None, w=None, maxOutputs=3, **kwargs):
@@ -707,7 +728,8 @@ class ZvitWriter(object):
 			              width      = int(w),
 			              colorspace = int(csc),
 			              imageData  = images).asValue(tag, metadata)
-			return self._stageValue(val)
+			with self._lock:
+				return self._stageValue(val)
 		elif isinstance(images, (list, np.ndarray)):
 			"""
 			"Numpy" calling convention: `image` is a numpy ndarray shaped (N,C,H,W).
@@ -805,7 +827,8 @@ class ZvitWriter(object):
 				              width      = int(w),
 				              colorspace = int(csc),
 				              imageData  = image).asValue(tag, metadata)
-				self._stageValue(val)
+				with self._lock:
+					self._stageValue(val)
 		else:
 			raise ValueError("Unable to interpret image arguments!")
 		
@@ -887,7 +910,8 @@ class ZvitWriter(object):
 			                lengthFrames = lengthFrames,
 			                audioData    = audio,
 			                contentType  = "audio/wav").asValue(tag, metadata)
-			self._stageValue(val)
+			with self._lock:
+				self._stageValue(val)
 		
 		return self
 	
@@ -900,7 +924,8 @@ class ZvitWriter(object):
 		if reject: return self
 		
 		val = TfTensor.fromText (text,   dimNames).asValue(tag, metadata)
-		return self._stageValue(val)
+		with self._lock:
+			return self._stageValue(val)
 	
 	def logTensor           (self, tag, tensor, dimNames=None, **kwargs):
 		"""
@@ -911,7 +936,8 @@ class ZvitWriter(object):
 		if reject: return self
 		
 		val = TfTensor.fromNumpy(tensor, dimNames).asValue(tag, metadata)
-		return self._stageValue(val)
+		with self._lock:
+			return self._stageValue(val)
 	
 	def logHist             (self, tag, hist,   bucketLimits=None, **kwargs):
 		"""
@@ -927,7 +953,8 @@ class ZvitWriter(object):
 			hist = TfHistogram.fromNumpy(hist, bucketLimits=bucketLimits)
 		
 		val = hist.asValue(tag, metadata)
-		return self._stageValue(val)
+		with self._lock:
+			return self._stageValue(val)
 	
 	def logMessage          (self, msg, level=TfLogLevel.UNKNOWN):
 		"""
@@ -950,9 +977,9 @@ class ZvitWriter(object):
 			#
 			
 			self._commitValues()
-			self.writeEvent(TfLogMessage(level   = level,
-			                             message = msg).asEvent(self.globalStep))
-			self.flush()
+			self._writeEvent(TfLogMessage(level   = level,
+			                              message = msg).asEvent(self.globalStep))
+			self._flush()
 		return self
 	
 	def logSession          (self, status, msg=None, path=None):
@@ -974,10 +1001,10 @@ class ZvitWriter(object):
 			#
 			
 			self._commitValues()
-			self.writeEvent(TfSessionLog(status         = status,
-			                             message        = msg,
-			                             checkpointPath = path).asEvent(self.globalStep))
-			self.flush()
+			self._writeEvent(TfSessionLog(status         = status,
+			                              message        = msg,
+			                              checkpointPath = path).asEvent(self.globalStep))
+			self._flush()
 		return self
 	
 	def logLayout           (self, layout):
@@ -997,7 +1024,8 @@ class ZvitWriter(object):
 		metadata = convert_metadata(pluginName="custom_scalars")
 		val      = TfTensor.fromText(layout.asByteArray())                  \
 		                   .asValue("custom_scalars__config__", metadata)
-		return self._stageValue(val)
+		with self._lock:
+			return self._stageValue(val)
 	
 	#
 	# Per-class, thread-local data
@@ -1042,6 +1070,32 @@ class NullZvitWriter(ZvitWriter):
 	def write               (self, b, flush=None): return len(b)
 	def flush               (self):                return self
 	def close               (self):                return self
+
+
+#
+# Utility Functions
+#
+
+def _flusher(proxy):
+	"""
+	Flusher thread implementation. Simply waits on the
+	condition and periodically flush to disk the buffer
+	contents.
+	
+	*MUST NOT* call close(), because it *WILL* lead to deadlock.
+	
+	On exit request, will indicate its own exit by destroying
+	the reference to itself in the ZvitWriter, and will then
+	notify all waiters before terminating.
+	"""
+	
+	thrd = threading.currentThread()
+	with proxy._lock:
+		while not thrd.isExiting:
+			proxy._lock.wait(proxy._flushSecs)
+			proxy._flush()
+		proxy._flushThread = None
+		proxy._lock.notifyAll()
 
 
 
